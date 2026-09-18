@@ -80,13 +80,13 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     function handleFileSelect(file) {
-        const allowedExtensions = ['.wav', '.mp3', '.aac', '.m4a', '.ogg', '.webm'];
+        const allowedExtensions = ['.wav', '.mp3', '.aac', '.m4a', '.ogg', '.webm', '.mpeg'];
         const fileName = file.name ? file.name.toLowerCase() : '';
-        const isValid = allowedExtensions.some(ext => fileName.endsWith(ext)) || (file.type && file.type.startsWith('audio/'));
+        const isValid = allowedExtensions.some(ext => fileName.endsWith(ext)) || (file.type && (file.type.startsWith('audio/') || file.type.startsWith('video/')));
 
         if (!isValid) {
             resetFileSelection();
-            showError('Invalid file format. Please select a supported audio file (.wav, .mp3, .aac, .m4a, .ogg, .webm).');
+            showError('Invalid file format. Please select a supported audio file (.wav, .mp3, .aac, .m4a, .ogg, .webm, .mpeg).');
             return;
         }
 
@@ -110,7 +110,7 @@ document.addEventListener('DOMContentLoaded', () => {
         selectedFile = null;
         audioFileInput.value = '';
         fileMeta.classList.add('hidden');
-        fileLabel.textContent = 'Click or drag an audio file (WAV, MP3, AAC, FLAC)';
+        fileLabel.textContent = 'Click or drag an audio file (WAV, MP3, AAC, M4A, OGG, WEBM, MPEG)';
         detectBtn.disabled = true;
         resultContainer.classList.add('hidden');
         hideError();

@@ -151,7 +151,7 @@ def load_audio_bytes(audio_bytes: bytes):
     except Exception as primary_err:
         print(f"Direct audio loading failed ({primary_err}). Invoking FFmpeg conversion...")
 
-    # Step 2: Fallback to FFmpeg decoding using temporary seekable disk files (for AAC / M4A / OGG / WEBM)
+    # Step 2: Fallback to FFmpeg decoding using temporary seekable disk files (for WAV / MP3 / AAC / M4A / OGG / WEBM / MPEG)
     tmp_in_path = None
     tmp_out_path = None
     try:
