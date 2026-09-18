@@ -11,6 +11,8 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
+from features import extract_features
+
 # =========================
 # App Initialization
 # =========================
@@ -25,7 +27,7 @@ app.add_middleware(
 )
 
 # =========================
-# API Key (use env var in production)
+# API Key Configuration
 # =========================
 API_KEY = os.getenv("API_KEY", "test_key_123")
 
@@ -46,112 +48,29 @@ def health():
     return {"status": "ok"}
 
 # =========================
-# Load ML Model Safely
+# Load ML Model Safely (V5)
 # =========================
 _model = None
 
 def get_model():
     global _model
     if _model is None:
-        _model = joblib.load("voice_model.pkl")
+        model_path = "voice_model_v5.pkl"
+        if not os.path.exists(model_path):
+            # Fallback check for root or relative path
+            alt_path = os.path.join(os.path.dirname(__file__), "voice_model_v5.pkl")
+            if os.path.exists(alt_path):
+                model_path = alt_path
+        _model = joblib.load(model_path)
     return _model
 
 # =========================
-# Feature Extraction
-# =========================
-def extract_features(audio, sr):
-    features = {}
-
-    # Pitch features
-    pitches, magnitudes = librosa.piptrack(y=audio, sr=sr)
-    pitch_values = pitches[pitches > 0]
-
-    features["pitch_mean"] = float(np.mean(pitch_values)) if len(pitch_values) > 0 else 0.0
-    features["pitch_std"] = float(np.std(pitch_values)) if len(pitch_values) > 0 else 0.0
-
-    # MFCCs
-    mfcc = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=13)
-    mfcc_means = np.mean(mfcc, axis=1)
-    for i, val in enumerate(mfcc_means):
-        features[f"mfcc_{i+1}"] = float(val)
-
-    # Spectral centroid
-    centroid = librosa.feature.spectral_centroid(y=audio, sr=sr)
-    features["spectral_centroid_mean"] = float(np.mean(centroid))
-
-    # Energy variation
-    rms = librosa.feature.rms(y=audio)
-    features["rms_std"] = float(np.std(rms))
-
-    # Zero Crossing Rate
-    zcr = librosa.feature.zero_crossing_rate(y=audio)
-    features["zcr_mean"] = float(np.mean(zcr))
-
-    return features
-
-# =========================
-# Rule-Based Detection (Fallback)
-# =========================
-def rule_based_detection(features):
-    score = 0
-    reasons = []
-
-    if features["pitch_std"] < 50:
-        score += 1
-        reasons.append("Unnaturally stable pitch detected")
-
-    if features["spectral_centroid_mean"] > 3000:
-        score += 1
-        reasons.append("Overly smooth spectral characteristics")
-
-    if features["rms_std"] < 0.01:
-        score += 1
-        reasons.append("Low energy variation typical of synthetic speech")
-
-    if score >= 2:
-        return "AI_GENERATED", 0.65, "; ".join(reasons)
-
-    return "HUMAN", 0.55, "Natural human-like speech dynamics observed"
-
-# =========================
-# ML Detection
-# =========================
-def ml_detection(features):
-    try:
-        model = get_model()
-    except Exception as e:
-        print("Model load failed:", e)
-        return None
-
-    vector = np.array(list(features.values())).reshape(1, -1)
-    return model.predict_proba(vector)[0][1]
-
-# =========================
-# Final Decision Logic
-# =========================
-def final_decision(features):
-    prob_ai = ml_detection(features)
-
-    if prob_ai is not None:
-        if prob_ai >= 0.75:
-            return "AI_GENERATED", round(prob_ai, 2), "ML model detected synthetic voice patterns"
-        elif prob_ai <= 0.25:
-            return "HUMAN", round(1 - prob_ai, 2), "ML model detected natural human speech patterns"
-    print("ML prob_ai:", prob_ai)
-    return rule_based_detection(features)
-
-
-# =========================
-# Audio Helper Logic
+# Fast Audio Helper Logic
 # =========================
 def load_audio_bytes(audio_bytes: bytes):
-    # Step 1: Direct librosa loading (for WAV/MP3)
-    try:
-        return librosa.load(io.BytesIO(audio_bytes), sr=16000, mono=True)
-    except Exception as primary_err:
-        print(f"Direct audio loading failed ({primary_err}). Invoking FFmpeg conversion...")
-
-    # Step 2: Fallback to FFmpeg decoding using temporary seekable disk files (for WAV / MP3 / AAC / M4A / OGG / WEBM / MPEG)
+    """
+    Decodes audio bytes (WAV, MP3, AAC, M4A, OGG, WEBM, MPEG) reliably into 16kHz mono WAV.
+    """
     tmp_in_path = None
     tmp_out_path = None
     try:
@@ -180,12 +99,12 @@ def load_audio_bytes(audio_bytes: bytes):
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
         if proc.returncode != 0 or not os.path.exists(tmp_out_path) or os.path.getsize(tmp_out_path) == 0:
-            err_details = proc.stderr.decode('utf-8', errors='ignore') if proc.stderr else "Empty FFmpeg output"
-            raise ValueError(f"FFmpeg decoding failed: {err_details}")
+            # Fallback to direct librosa load if FFmpeg fails
+            return librosa.load(io.BytesIO(audio_bytes), sr=16000, mono=True)
 
         return librosa.load(tmp_out_path, sr=16000, mono=True)
-    except Exception as fallback_err:
-        raise ValueError(f"Audio format decoding failed: {str(fallback_err)}")
+    except Exception as err:
+        raise ValueError(f"Audio format decoding failed: {str(err)}")
     finally:
         if tmp_in_path and os.path.exists(tmp_in_path):
             try:
@@ -197,7 +116,6 @@ def load_audio_bytes(audio_bytes: bytes):
                 os.remove(tmp_out_path)
             except Exception:
                 pass
-
 
 # =========================
 # API Endpoint
@@ -218,18 +136,37 @@ def voice_detection(payload: dict, x_api_key: str = Header(None)):
             audio_b64 = audio_b64.split(",", 1)[1]
         audio_bytes = base64.b64decode(audio_b64)
 
-        # Load audio (WAV / MP3 / AAC / M4A / OGG / WEBM)
+        # Load audio (WAV / MP3 / AAC / M4A / OGG / WEBM / MPEG)
         audio, sr = load_audio_bytes(audio_bytes)
 
-
+        # Validate minimum duration requirement (1 second minimum)
         if len(audio) < sr:
-            raise ValueError("Audio too short")
+            raise ValueError("Audio file too short. Minimum duration is 1 second.")
 
-        # Feature extraction
-        features = extract_features(audio, sr)
+        # Optimize execution time: limit analysis window to maximum 10 seconds
+        max_samples = 10 * sr
+        if len(audio) > max_samples:
+            audio = audio[:max_samples]
 
-        # Final decision
-        classification, confidence, explanation = final_decision(features)
+        # Extract 90 acoustic features matching model V5
+        feat_vector = extract_features(audio, sr)
+        if feat_vector is None:
+            raise ValueError("Failed to extract features from audio.")
+
+        # Predict using voice_model_v5
+        model = get_model()
+        vector_2d = feat_vector.reshape(1, -1)
+        prob_ai = float(model.predict_proba(vector_2d)[0][1])
+
+        # Classification decision based on trained model probability
+        if prob_ai >= 0.5:
+            classification = "AI_GENERATED"
+            confidence = round(prob_ai, 2)
+            explanation = f"AI model detected synthetic voice characteristics (AI probability: {prob_ai:.1%})"
+        else:
+            classification = "HUMAN"
+            confidence = round(1.0 - prob_ai, 2)
+            explanation = f"AI model detected natural human speech dynamics (Human probability: {(1.0 - prob_ai):.1%})"
 
         return {
             "status": "success",
@@ -239,5 +176,7 @@ def voice_detection(payload: dict, x_api_key: str = Header(None)):
             "explanation": explanation
         }
 
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Audio processing failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Audio processing failed: {str(e)}")
