@@ -34,7 +34,14 @@ document.addEventListener('DOMContentLoaded', () => {
     let recordingTimer = null;
     let secondsElapsed = 0;
 
-    // Drag & Drop visual feedback
+    // Prevent default drag behaviors on window to prevent browser from navigating/opening dropped file
+    ['dragover', 'drop'].forEach(eventName => {
+        window.addEventListener(eventName, (e) => {
+            e.preventDefault();
+        });
+    });
+
+    // Drag & Drop visual feedback & file drop handling
     ['dragenter', 'dragover'].forEach(eventName => {
         dropzone.addEventListener(eventName, (e) => {
             e.preventDefault();
@@ -53,7 +60,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     dropzone.addEventListener('drop', (e) => {
         const dt = e.dataTransfer;
-        if (dt.files && dt.files[0]) {
+        if (dt && dt.files && dt.files.length > 0) {
             handleFileSelect(dt.files[0]);
         }
     });
@@ -73,6 +80,16 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     function handleFileSelect(file) {
+        const allowedExtensions = ['.wav', '.mp3', '.aac', '.m4a', '.ogg', '.webm'];
+        const fileName = file.name ? file.name.toLowerCase() : '';
+        const isValid = allowedExtensions.some(ext => fileName.endsWith(ext)) || (file.type && file.type.startsWith('audio/'));
+
+        if (!isValid) {
+            resetFileSelection();
+            showError('Invalid file format. Please select a supported audio file (.wav, .mp3, .aac, .m4a, .ogg, .webm).');
+            return;
+        }
+
         selectedFile = file;
         fileNameDisplay.textContent = file.name;
         fileMeta.classList.remove('hidden');

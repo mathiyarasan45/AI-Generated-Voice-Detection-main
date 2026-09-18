@@ -1,9 +1,12 @@
 import os
 import base64
 import io
+import tempfile
 import joblib
 import librosa
 import numpy as np
+import subprocess
+import imageio_ffmpeg
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -139,6 +142,64 @@ def final_decision(features):
 
 
 # =========================
+# Audio Helper Logic
+# =========================
+def load_audio_bytes(audio_bytes: bytes):
+    # Step 1: Direct librosa loading (for WAV/MP3)
+    try:
+        return librosa.load(io.BytesIO(audio_bytes), sr=16000, mono=True)
+    except Exception as primary_err:
+        print(f"Direct audio loading failed ({primary_err}). Invoking FFmpeg conversion...")
+
+    # Step 2: Fallback to FFmpeg decoding using temporary seekable disk files (for AAC / M4A / OGG / WEBM)
+    tmp_in_path = None
+    tmp_out_path = None
+    try:
+        try:
+            ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception:
+            ffmpeg_exe = "ffmpeg"
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".tmp") as tmp_in:
+            tmp_in.write(audio_bytes)
+            tmp_in_path = tmp_in.name
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_out:
+            tmp_out_path = tmp_out.name
+
+        cmd = [
+            ffmpeg_exe, "-y",
+            "-i", tmp_in_path,
+            "-vn",
+            "-acodec", "pcm_s16le",
+            "-ac", "1",
+            "-ar", "16000",
+            tmp_out_path
+        ]
+
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        if proc.returncode != 0 or not os.path.exists(tmp_out_path) or os.path.getsize(tmp_out_path) == 0:
+            err_details = proc.stderr.decode('utf-8', errors='ignore') if proc.stderr else "Empty FFmpeg output"
+            raise ValueError(f"FFmpeg decoding failed: {err_details}")
+
+        return librosa.load(tmp_out_path, sr=16000, mono=True)
+    except Exception as fallback_err:
+        raise ValueError(f"Audio format decoding failed: {str(fallback_err)}")
+    finally:
+        if tmp_in_path and os.path.exists(tmp_in_path):
+            try:
+                os.remove(tmp_in_path)
+            except Exception:
+                pass
+        if tmp_out_path and os.path.exists(tmp_out_path):
+            try:
+                os.remove(tmp_out_path)
+            except Exception:
+                pass
+
+
+# =========================
 # API Endpoint
 # =========================
 @app.post("/api/voice-detection")
@@ -151,11 +212,14 @@ def voice_detection(payload: dict, x_api_key: str = Header(None)):
         raise HTTPException(status_code=400, detail="audioBase64 missing")
 
     try:
-        # Decode Base64 audio
-        audio_bytes = base64.b64decode(payload["audioBase64"], validate=True)
+        # Decode Base64 audio (strip data URL prefix if present)
+        audio_b64 = payload["audioBase64"]
+        if "," in audio_b64:
+            audio_b64 = audio_b64.split(",", 1)[1]
+        audio_bytes = base64.b64decode(audio_b64)
 
-        # Load audio (MP3/WAV)
-        audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=16000, mono=True)
+        # Load audio (WAV / MP3 / AAC / M4A / OGG / WEBM)
+        audio, sr = load_audio_bytes(audio_bytes)
 
 
         if len(audio) < sr:

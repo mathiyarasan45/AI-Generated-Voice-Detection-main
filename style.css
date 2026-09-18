@@ -111,6 +111,14 @@ body {
     background: rgba(99, 102, 241, 0.08);
 }
 
+.file-dropzone > *:not(.file-input) {
+    pointer-events: none;
+}
+
+.btn-clear {
+    pointer-events: auto;
+}
+
 .dropzone-icon {
     color: var(--text-secondary);
     margin-bottom: 8px;

@@ -6,3 +6,4 @@ soundfile
 scikit-learn
 python-multipart
 joblib
+imageio-ffmpeg
